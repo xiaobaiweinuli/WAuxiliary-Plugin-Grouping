@@ -58,18 +58,18 @@
 若检测到没有相关配置文件，将自动生成以下初始分组：
 ```json
 [
-  { "title": "全部",  "order": 0, "icon": "全部.png",  "enable": true, "idList": [] },
-  { "title": "好友",  "order": 1, "icon": "好友.png",  "enable": true, "idList": [] },
-  { "title": "群聊",  "order": 2, "icon": "群聊.png",  "enable": true, "idList": [] },
-  { "title": "工作",  "order": 3, "icon": "工作.png",  "enable": true, "idList": [] },
-  { "title": "官方",  "order": 5, "icon": "公众号.png", "enable": true, "idList": [] }
+  { "type": "all", "order": 0, "title": "全部", "enable": true, "idList": [] },
+  { "type": "group", "order": 1, "title": "群聊", "enable": true, "idList": [] },
+  { "type": "friend", "order": 2, "title": "好友", "enable": true, "idList": [] },
+  { "type": "official", "order": 3, "title": "官方", "enable": true, "idList": [] },
+  { "type": "custom", "order": 4, "title": "示例", "enable": true, "idList": [] }
 ]
 ```
 
 ### 数据字段结构
 * **title (String)**：分组名称，全局唯一。
 * **order (int)**：排列顺序，数值越小越靠前。
-* **icon (String)**：对应的图标文件名。
+* **type (String)**：自定义tab。
 * **enable (boolean)**：该分组是否处于启用状态。
 * **idList (Array)**：存储分组内成员 wxid 的列表。
 
