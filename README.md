@@ -69,7 +69,7 @@
 ### 数据字段结构
 * **title (String)**：分组名称，全局唯一。
 * **order (int)**：排列顺序，数值越小越靠前。
-* **type (String)**：自定义tab。
+* **type (String)**：自定义Tab（长按custom的Tab可以显示添加页面）。
 * **enable (boolean)**：该分组是否处于启用状态。
 * **idList (Array)**：存储分组内成员 wxid 的列表。
 
