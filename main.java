@@ -185,17 +185,14 @@ boolean showAddGroupDialog() {
                 // fix②: 文件不存在时自动创建默认分组文件，而非报错返回
                 if (!groupFile.exists()) {
                     groupItems = new JSONArray();
-                    String[] titles = new String[5];
-                    titles[0]="全部"; titles[1]="好友"; titles[2]="群聊"; titles[3]="工作"; titles[4]="官方";
-                    String[] icons = new String[5];
-                    icons[0]="全部.png"; icons[1]="好友.png"; icons[2]="群聊.png"; icons[3]="工作.png"; icons[4]="公众号.png";
-                    int[] orders = new int[5];
-                    orders[0]=0; orders[1]=1; orders[2]=2; orders[3]=3; orders[4]=5;
+                    String[] types  = new String[]{"all", "group", "friend", "official", "custom"};
+                    String[] titles = new String[]{"全部", "群聊", "好友", "官方", "示例"};
+                    int[] orders    = new int[]{0, 1, 2, 3, 4};
                     for (int di = 0; di < titles.length; di++) {
                         JSONObject dg = new JSONObject();
+                        dg.put("type", types[di]);
                         dg.put("title", titles[di]);
                         dg.put("order", orders[di]);
-                        dg.put("icon", icons[di]);
                         dg.put("enable", true);
                         dg.put("idList", new JSONArray());
                         groupItems.put(dg);
@@ -2817,12 +2814,13 @@ void showCreateNewGroupDialog(JSONArray groupItems, String currentWxid, File gro
                                 }
                             }
                             JSONObject newGroup = new JSONObject();
+                            newGroup.put("type", "custom");
                             newGroup.put("title", groupName);
                             newGroup.put("order", groupItems.length());
-                            newGroup.put("icon", "ic_group.png");
                             newGroup.put("enable", true);
                             newGroup.put("idList", new JSONArray());
                             groupItems.put(newGroup);
+
                             // fix⑤: 使用saveGroupData统一保存
                             saveGroupData(groupItems, groupFile);
                             addDialog.dismiss();
