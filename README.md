@@ -110,3 +110,55 @@
 ### 2026-02-28
 * 支持群聊批量添加。
 * 插件加载时自动同步头像至 `{WAuxiliary目录}/Resource/Group/avatars`。
+
+# 现状
+不再需要插件、WAuxiliary已支持好友和群聊的可视化添加且更新了`groupItems.json`的格式（PS：插件里面的公众号和标签还是可以使用的）
+```json
+[
+  { "title": "全部",  "order": 0, "icon": "全部.png",  "enable": true, "idList": [] },
+  { "title": "好友",  "order": 1, "icon": "好友.png",  "enable": true, "idList": [] },
+  { "title": "群聊",  "order": 2, "icon": "群聊.png",  "enable": true, "idList": [] },
+  { "title": "工作",  "order": 3, "icon": "工作.png",  "enable": true, "idList": [] },
+  { "title": "官方",  "order": 5, "icon": "公众号.png", "enable": true, "idList": [] }
+]
+```
+最新的格式更新成了：
+```
+[
+    {
+        "type": "all",
+        "order": 0,
+        "title": "全部",
+        "enable": true,
+        "idList": []
+    },
+    {
+        "type": "group",
+        "order": 1,
+        "title": "群聊",
+        "enable": true,
+        "idList": []
+    },
+    {
+        "type": "friend",
+        "order": 2,
+        "title": "好友",
+        "enable": true,
+        "idList": []
+    },
+    {
+        "type": "official",
+        "order": 3,
+        "title": "官方",
+        "enable": true,
+        "idList": []
+    },
+    {
+        "type": "custom",
+        "order": 4,
+        "title": "示例",
+        "enable": true,
+        "idList": []
+    }
+]
+```
