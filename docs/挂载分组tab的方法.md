@@ -57,7 +57,7 @@ void onUnLoad() {
 }
 ```
 
-### 方案2：用 OnTouchListener 自己判断长按（绕过系统长按事件）
+### ~~方案2：用 OnTouchListener 自己判断长按（绕过系统长按事件）~~
 
 ```java
 void onLoad() {
