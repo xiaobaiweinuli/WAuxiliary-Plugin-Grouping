@@ -25,36 +25,33 @@ import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
-// ==================== 全局缓存：好友/群聊/公众号/标签 ====================
 private java.util.List<String> cachedOfficialWxids;
 private java.util.List<String> cachedServiceWxids;
+private java.util.List<String> cachedEnterpriseWxids;
 private java.util.List<String[]> cachedLabels;
 private java.util.Map<String, java.util.List<String>> cachedLabelMembers;
-/** 保护 cachedOfficialWxids / cachedServiceWxids / cachedLabels / cachedLabelMembers
- *  的互斥锁：预热线程与批量添加线程可能并发写入，统一通过此锁串行化。 */
 private final Object wcdbCacheLock = new Object();
 
-// ==================== 批量添加对话框状态（ds_ 前缀）====================
-// BeanShell 不支持 class 定义，改用独立成员变量替代 DialogState 对象。
-// 每次打开对话框时统一在 resetDialogState() 中重置，Runnable 闭包通过
-// 成员变量访问，避免 BeanShell BlockNameSpace 闭包捕获方法参数失效的问题。
-private java.util.Set<String> ds_alreadyAdded  = new java.util.HashSet<>();
-private java.util.Set<String> ds_officialFull  = new java.util.HashSet<>();
-private java.util.Set<String> ds_serviceFull   = new java.util.HashSet<>();
-private java.util.List<String> ds_officialWxids = new java.util.ArrayList<>();
-private java.util.List<String> ds_serviceWxids  = new java.util.ArrayList<>();
-private java.util.List<String[]> ds_labels      = new java.util.ArrayList<>();
+private java.util.Set<String> ds_alreadyAdded    = new java.util.HashSet<>();
+private java.util.Set<String> ds_officialFull    = new java.util.HashSet<>();
+private java.util.Set<String> ds_serviceFull     = new java.util.HashSet<>();
+private java.util.Set<String> ds_enterpriseFull  = new java.util.HashSet<>();
+private java.util.List<String> ds_officialWxids   = new java.util.ArrayList<>();
+private java.util.List<String> ds_serviceWxids    = new java.util.ArrayList<>();
+private java.util.List<String> ds_enterpriseWxids = new java.util.ArrayList<>();
+private java.util.List<String[]> ds_labels        = new java.util.ArrayList<>();
 private java.util.Map<String, java.util.List<String>> ds_labelMembers = new java.util.HashMap<>();
 
-/** 每次打开批量添加对话框前调用，重置全部 ds_ 状态 */
 private void resetDialogState() {
-    ds_alreadyAdded  = new java.util.HashSet<>();
-    ds_officialFull  = new java.util.HashSet<>();
-    ds_serviceFull   = new java.util.HashSet<>();
-    ds_officialWxids = new java.util.ArrayList<>();
-    ds_serviceWxids  = new java.util.ArrayList<>();
-    ds_labels        = new java.util.ArrayList<>();
-    ds_labelMembers  = new java.util.HashMap<>();
+    ds_alreadyAdded    = new java.util.HashSet<>();
+    ds_officialFull    = new java.util.HashSet<>();
+    ds_serviceFull     = new java.util.HashSet<>();
+    ds_enterpriseFull  = new java.util.HashSet<>();
+    ds_officialWxids   = new java.util.ArrayList<>();
+    ds_serviceWxids    = new java.util.ArrayList<>();
+    ds_enterpriseWxids = new java.util.ArrayList<>();
+    ds_labels          = new java.util.ArrayList<>();
+    ds_labelMembers    = new java.util.HashMap<>();
 }
 
 Object hook;
@@ -163,9 +160,10 @@ boolean showAddGroupDialog() {
                 // 在锁内取快照，避免与其他线程重建缓存时产生ConcurrentModificationException
                 java.util.List<String> allWxids = new java.util.ArrayList<>();
                 synchronized (wcdbCacheLock) {
-                    if (cachedFriendWxidList != null) allWxids.addAll(cachedFriendWxidList);
-                    if (cachedOfficialWxids  != null) allWxids.addAll(cachedOfficialWxids);
-                    if (cachedServiceWxids   != null) allWxids.addAll(cachedServiceWxids);
+                    if (cachedFriendWxidList  != null) allWxids.addAll(cachedFriendWxidList);
+                    if (cachedOfficialWxids   != null) allWxids.addAll(cachedOfficialWxids);
+                    if (cachedServiceWxids    != null) allWxids.addAll(cachedServiceWxids);
+                    if (cachedEnterpriseWxids != null) allWxids.addAll(cachedEnterpriseWxids);
                 }
 
                 if (!allWxids.isEmpty()) {
@@ -1111,15 +1109,14 @@ private void runIncrementalSync(final Runnable onComplete) {
                 // 同时刷新公众号列表
                 loadWcdbOfficialAccounts(cachedFriendNameMap);
 
-                // 在锁内取快照，避免与预热线程并发读写缓存列表
                 final java.util.List<String> wxidSnapshot = new java.util.ArrayList<>();
                 synchronized (wcdbCacheLock) {
-                    if (cachedFriendWxidList != null) wxidSnapshot.addAll(cachedFriendWxidList);
-                    if (cachedOfficialWxids  != null) wxidSnapshot.addAll(cachedOfficialWxids);
-                    if (cachedServiceWxids   != null) wxidSnapshot.addAll(cachedServiceWxids);
+                    if (cachedFriendWxidList  != null) wxidSnapshot.addAll(cachedFriendWxidList);
+                    if (cachedOfficialWxids   != null) wxidSnapshot.addAll(cachedOfficialWxids);
+                    if (cachedServiceWxids    != null) wxidSnapshot.addAll(cachedServiceWxids);
+                    if (cachedEnterpriseWxids != null) wxidSnapshot.addAll(cachedEnterpriseWxids);
                 }
 
-                // ── 步骤1：清理孤立头像文件（基于完整快照，不会误删公众号头像）──
                 java.util.Set<String> currentSafeNames = new java.util.HashSet<>();
                 for (String wxid : wxidSnapshot) {
                     currentSafeNames.add(
@@ -1143,8 +1140,6 @@ private void runIncrementalSync(final Runnable onComplete) {
                 }
                 log("孤立头像清理完成，共清理 " + cleanCount + " 个");
 
-                // ── 步骤2 & 3：新增联系人下载 + URL变化检测 ──
-                // 收集磁盘缺失且不在黑名单的条目，下载后验证结果
                 java.util.List<String> toDownload = new java.util.ArrayList<>();
                 int newCount = 0;
                 for (String wxid : wxidSnapshot) {
@@ -1971,69 +1966,80 @@ private void readWcdbCursor(Object cursor, java.util.List<String> wxidList,
     } catch (Exception ignore) {}
 }
 
-/**
- * 从 WCDB 加载公众号（订阅号/服务号），昵称合并入 nameMap
- *
- * 优化：原来两次独立 SQL（WHERE verifyFlag & 8 / WHERE verifyFlag & 16），
- * 改为一次 SELECT 读出 username+nickname+verifyFlag，在 Java 内存里用位运算分类。
- * rcontact 只扫一次，IO 减半。
- *
- * verifyFlag 规则（微信官方）：
- *   订阅号：bit3=1 且 bit4=0，即 (flag & 24) == 8
- *   服务号：bit4=1，即 (flag & 16) != 0
- */
 private void loadWcdbOfficialAccounts(java.util.Map<String, String> nameMap) {
     synchronized (wcdbCacheLock) {
-    // 缓存有效则直接使用，避免每次打开批量添加页面都重新扫描WCDB
     long _now = System.currentTimeMillis();
     if (cachedOfficialWxids != null && cachedServiceWxids != null
+            && cachedEnterpriseWxids != null
             && (_now - officialCacheTime) < CACHE_DURATION) {
         return;
     }
-    cachedOfficialWxids = new java.util.ArrayList<>();
-    cachedServiceWxids  = new java.util.ArrayList<>();
+    cachedOfficialWxids   = new java.util.ArrayList<>();
+    cachedServiceWxids    = new java.util.ArrayList<>();
+    cachedEnterpriseWxids = new java.util.ArrayList<>();
     try {
         Object db = getWcdbInstance();
         if (db == null) { log("[wcdb] 公众号加载：DB实例为null"); return; }
 
-        // 一次查询读出所有公众号候选：username + nickname + verifyFlag
-        // 内存位运算分类，避免两次 SQL 扫表
+        // 订阅号/服务号：verifyFlag bit3=1，bit4区分类型
         Object cursor = wcdbRawQuery(db,
             "SELECT username, nickname, verifyFlag FROM rcontact " +
             "WHERE (username LIKE 'gh_%' OR username = 'weixin') " +
             "  AND (verifyFlag & 8) != 0" +
             "  AND (type & 1) != 0 " +
             " ORDER BY nickname");
-        if (cursor == null) return;
-        try {
-            Class cc = cursor.getClass();
-            java.lang.reflect.Method mn  = cc.getMethod("moveToNext");
-            java.lang.reflect.Method gs  = cc.getMethod("getString", int.class);
-            java.lang.reflect.Method gi  = cc.getMethod("getInt", int.class);
-            java.lang.reflect.Method cl  = cc.getMethod("close");
+        if (cursor != null) {
             try {
-                while ((Boolean) mn.invoke(cursor)) {
-                    String wxid  = (String) gs.invoke(cursor, 0);
-                    String nick  = (String) gs.invoke(cursor, 1);
-                    int    flag  = (Integer) gi.invoke(cursor, 2);
-                    if (wxid == null || wxid.isEmpty()) continue;
-                    String name = (nick != null && !nick.isEmpty()) ? nick : wxid;
-                    nameMap.put(wxid, name);
-                    // 订阅号：bit3=1 且 bit4=0；服务号：bit4=1
-                    if ((flag & 16) != 0) {
-                        cachedServiceWxids.add(wxid);
-                    } else {
-                        cachedOfficialWxids.add(wxid);
+                Class cc = cursor.getClass();
+                java.lang.reflect.Method mn = cc.getMethod("moveToNext");
+                java.lang.reflect.Method gs = cc.getMethod("getString", int.class);
+                java.lang.reflect.Method gi = cc.getMethod("getInt", int.class);
+                java.lang.reflect.Method cl = cc.getMethod("close");
+                try {
+                    while ((Boolean) mn.invoke(cursor)) {
+                        String wxid = (String) gs.invoke(cursor, 0);
+                        String nick = (String) gs.invoke(cursor, 1);
+                        int    flag = (Integer) gi.invoke(cursor, 2);
+                        if (wxid == null || wxid.isEmpty()) continue;
+                        nameMap.put(wxid, (nick != null && !nick.isEmpty()) ? nick : wxid);
+                        if ((flag & 16) != 0) cachedServiceWxids.add(wxid);
+                        else                  cachedOfficialWxids.add(wxid);
                     }
-                }
-            } finally { cl.invoke(cursor); }
-        } catch (Exception ignore) {}
+                } finally { cl.invoke(cursor); }
+            } catch (Exception ignore) {}
+        }
+
+        // 企业好友：wxid 以 ww_ / wxwork_ 开头，或以 @openim 结尾
+        Object ecursor = wcdbRawQuery(db,
+            "SELECT username, nickname FROM rcontact " +
+            "WHERE (username LIKE 'ww_%' OR username LIKE 'wxwork_%' OR username LIKE '%@openim')" +
+            "  AND (type & 1) != 0 ORDER BY nickname");
+        if (ecursor != null) {
+            try {
+                Class cc = ecursor.getClass();
+                java.lang.reflect.Method mn = cc.getMethod("moveToNext");
+                java.lang.reflect.Method gs = cc.getMethod("getString", int.class);
+                java.lang.reflect.Method cl = cc.getMethod("close");
+                try {
+                    while ((Boolean) mn.invoke(ecursor)) {
+                        String wxid = (String) gs.invoke(ecursor, 0);
+                        String nick = (String) gs.invoke(ecursor, 1);
+                        if (wxid == null || wxid.isEmpty()) continue;
+                        nameMap.put(wxid, (nick != null && !nick.isEmpty()) ? nick : wxid);
+                        cachedEnterpriseWxids.add(wxid);
+                    }
+                } finally { cl.invoke(ecursor); }
+            } catch (Exception ignore) {}
+        }
+
         officialCacheTime = System.currentTimeMillis();
-        log("[wcdb] 订阅号=" + cachedOfficialWxids.size() + " 服务号=" + cachedServiceWxids.size());
+        log("[wcdb] 订阅号=" + cachedOfficialWxids.size()
+            + " 服务号=" + cachedServiceWxids.size()
+            + " 企业好友=" + cachedEnterpriseWxids.size());
     } catch (Exception e) {
         log("[wcdb] loadWcdbOfficialAccounts 失败: " + e.getMessage());
     }
-    } // end synchronized (wcdbCacheLock)
+    }
 }
 
 /**
@@ -2217,19 +2223,23 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
 
                 loadWcdbLabels(availableFriends);
 
-                // 填充 ds_*
                 resetDialogState();
                 ds_alreadyAdded = alreadyAdded;
                 ds_officialFull = (cachedOfficialWxids != null)
                     ? new java.util.HashSet<>(cachedOfficialWxids) : new java.util.HashSet<>();
-                ds_serviceFull  = (cachedServiceWxids  != null)
-                    ? new java.util.HashSet<>(cachedServiceWxids)  : new java.util.HashSet<>();
+                ds_serviceFull  = (cachedServiceWxids != null)
+                    ? new java.util.HashSet<>(cachedServiceWxids) : new java.util.HashSet<>();
+                ds_enterpriseFull = (cachedEnterpriseWxids != null)
+                    ? new java.util.HashSet<>(cachedEnterpriseWxids) : new java.util.HashSet<>();
                 if (cachedOfficialWxids != null)
                     for (String w : cachedOfficialWxids)
                         if (!alreadyAdded.contains(w)) ds_officialWxids.add(w);
                 if (cachedServiceWxids != null)
                     for (String w : cachedServiceWxids)
                         if (!alreadyAdded.contains(w)) ds_serviceWxids.add(w);
+                if (cachedEnterpriseWxids != null)
+                    for (String w : cachedEnterpriseWxids)
+                        if (!alreadyAdded.contains(w)) ds_enterpriseWxids.add(w);
                 ds_labels = cachedLabels != null
                     ? new java.util.ArrayList<>(cachedLabels) : new java.util.ArrayList<>();
                 ds_labelMembers = new java.util.HashMap<>();
@@ -2239,7 +2249,6 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
                     }
                 }
 
-                // 数据就绪，post 到主线程创建对话框并直接渲染（和旧方案完全一致）
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
                     public void run() {
                         createBatchAddDialog(act, groupIndex, groupItems, groupFile, currentWxid,
@@ -2269,7 +2278,7 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                                 final java.util.List availableFriends,
                                 final int excludedCount) {
     try {
-        final int TAB_FIXED = 5;
+        final int TAB_FIXED = 6;
         final int totalTabs = TAB_FIXED + ds_labels.size();
 
         final java.util.List originalFriends = new java.util.ArrayList(availableFriends);
@@ -2289,7 +2298,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         infoView.setPadding(0, 0, 0, dp(10));
         root.addView(infoView);
 
-        // ── Tab 行（HorizontalScrollView 支持多标签滚动）──
         final int[] currentTab = new int[]{0};
         HorizontalScrollView tabScroll = new HorizontalScrollView(act);
         tabScroll.setHorizontalScrollBarEnabled(false);
@@ -2299,12 +2307,11 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         tabLayout.setOrientation(LinearLayout.HORIZONTAL);
         tabScroll.addView(tabLayout);
 
-        // 所有Tab按钮（含标签Tab）在数据就绪后统一创建，无需动态追加
         final Object[] tabButtonsHolder = new Object[1];
         tabButtonsHolder[0] = new Button[totalTabs];
         final int[] totalTabsRef = new int[]{totalTabs};
 
-        final String[] fixedNames = {"全部", "好友", "群聊", "订阅号", "服务号"};
+        final String[] fixedNames = {"全部", "好友", "群聊", "企业好友", "订阅号", "服务号"};
         Button[] _initBtns = (Button[]) tabButtonsHolder[0];
         for (int _t = 0; _t < totalTabs; _t++) {
             String label;
@@ -2328,7 +2335,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         }
         root.addView(tabScroll);
 
-        // ── updateTabStyle：遍历当前所有按钮 ──
         final Runnable[] updateTabStyle = new Runnable[1];
         updateTabStyle[0] = new Runnable() {
             public void run() {
@@ -2342,7 +2348,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         };
         updateTabStyle[0].run();
 
-        // ── 搜索区域 ──
         LinearLayout searchLayout = new LinearLayout(act);
         searchLayout.setOrientation(LinearLayout.HORIZONTAL);
         searchLayout.setPadding(0, 0, 0, dp(10));
@@ -2370,7 +2375,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         searchLayout.addView(clearBtn, cbp);
         root.addView(searchLayout);
 
-        // ── 操作按钮行 ──
         LinearLayout operationLayout = new LinearLayout(act);
         operationLayout.setOrientation(LinearLayout.HORIZONTAL);
         operationLayout.setGravity(Gravity.CENTER_VERTICAL);
@@ -2411,8 +2415,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         operationLayout.addView(actionLayout);
         root.addView(operationLayout);
 
-        // ── ListView 虚拟滚动（只渲染可见行约15条，滑动时复用View）──
-        // 预计算dp，避免在getView里反复调用
         final int _dp4 = dp(4), _dp6 = dp(6), _dp8 = dp(8), _dp12 = dp(12), _dp40 = dp(40);
         final LinearLayout.LayoutParams _rowLP = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -2438,8 +2440,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         listView.setPadding(dp(8), dp(6), dp(8), dp(48));
         listView.setClipToPadding(false);
 
-        // TYPE_HEADER=0（分类标题），TYPE_ROW=1（联系人）
-        // ListView只为可见行调用getView，滑动时复用convertView
         final BaseAdapter[] tabAdapter = new BaseAdapter[1];
         tabAdapter[0] = new BaseAdapter() {
             public int getCount() { return currentData[0].size(); }
@@ -2453,7 +2453,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                 String key = (String) currentData[0].get(pos);
                 boolean isHeader = currentHeaders[0].contains(key);
                 if (isHeader) {
-                    // ── 分类标题行（复用TextView）──
                     TextView tv;
                     if (convertView instanceof TextView) {
                         tv = (TextView) convertView;
@@ -2465,10 +2464,11 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                         tv.setPadding(_dp8, _dp6, _dp8, _dp4);
                     }
                     String label;
-                    if ("__header_friend__".equals(key))        label = "👤 好友";
-                    else if ("__header_group__".equals(key))    label = "💬 群聊";
-                    else if ("__header_official__".equals(key)) label = "📢 订阅号";
-                    else                                        label = "🏢 服务号";
+                    if ("__header_friend__".equals(key))           label = "👤 好友";
+                    else if ("__header_group__".equals(key))       label = "💬 群聊";
+                    else if ("__header_enterprise__".equals(key))  label = "🏢 企业好友";
+                    else if ("__header_official__".equals(key))    label = "📢 订阅号";
+                    else                                           label = "🏢 服务号";
                     int cnt = 0;
                     for (int j = pos + 1; j < currentData[0].size(); j++) {
                         if (currentHeaders[0].contains(currentData[0].get(j))) break;
@@ -2480,11 +2480,9 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                     // ── 联系人行（复用LinearLayout）──
                     LinearLayout row;
                     if (convertView instanceof LinearLayout) {
-                        // 复用：只更新数据，不重建View结构
                         row = (LinearLayout) convertView;
                         bindContactRow(row, key, cachedFriendNameMap, selectedWxids);
                     } else {
-                        // 首次创建
                         row = buildContactRow(act, key, cachedFriendNameMap, selectedWxids,
                             _rowLP, _cbLP, _infoLP, _dp6, _dp8, _dp12, _dp40);
                     }
@@ -2498,7 +2496,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         root.addView(listView, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, listH));
 
-        // ── fillTabData：根据currentTab和搜索关键字填充currentData[0]/currentHeaders[0] ──
         final Runnable[] fillTabData = new Runnable[1];
         fillTabData[0] = new Runnable() {
             public void run() {
@@ -2510,6 +2507,7 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                 if (tab == 0) {
                     java.util.List fL = new java.util.ArrayList();
                     java.util.List gL = new java.util.ArrayList();
+                    java.util.List eL = new java.util.ArrayList();
                     java.util.List oL = new java.util.ArrayList();
                     java.util.List sL = new java.util.ArrayList();
                     for (int _i = 0; _i < originalFriends.size(); _i++) {
@@ -2519,6 +2517,14 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                             if (!(name + " " + wxid).toLowerCase().contains(kwl)) continue;
                         }
                         if (wxid.endsWith("@chatroom")) gL.add(wxid); else fL.add(wxid);
+                    }
+                    for (int _i = 0; _i < ds_enterpriseWxids.size(); _i++) {
+                        String wxid = (String) ds_enterpriseWxids.get(_i);
+                        if (!kwl.isEmpty()) {
+                            String name = (String) cachedFriendNameMap.get(wxid); if (name == null) name = "";
+                            if (!(name + " " + wxid).toLowerCase().contains(kwl)) continue;
+                        }
+                        eL.add(wxid);
                     }
                     for (int _i = 0; _i < ds_officialWxids.size(); _i++) {
                         String wxid = (String) ds_officialWxids.get(_i);
@@ -2536,10 +2542,11 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                         }
                         sL.add(wxid);
                     }
-                    if (!fL.isEmpty()) { currentData[0].add("__header_friend__");   currentHeaders[0].add("__header_friend__");   currentData[0].addAll(fL); }
-                    if (!gL.isEmpty()) { currentData[0].add("__header_group__");    currentHeaders[0].add("__header_group__");    currentData[0].addAll(gL); }
-                    if (!oL.isEmpty()) { currentData[0].add("__header_official__"); currentHeaders[0].add("__header_official__"); currentData[0].addAll(oL); }
-                    if (!sL.isEmpty()) { currentData[0].add("__header_service__");  currentHeaders[0].add("__header_service__");  currentData[0].addAll(sL); }
+                    if (!fL.isEmpty()) { currentData[0].add("__header_friend__");     currentHeaders[0].add("__header_friend__");     currentData[0].addAll(fL); }
+                    if (!gL.isEmpty()) { currentData[0].add("__header_group__");      currentHeaders[0].add("__header_group__");      currentData[0].addAll(gL); }
+                    if (!eL.isEmpty()) { currentData[0].add("__header_enterprise__"); currentHeaders[0].add("__header_enterprise__"); currentData[0].addAll(eL); }
+                    if (!oL.isEmpty()) { currentData[0].add("__header_official__");   currentHeaders[0].add("__header_official__");   currentData[0].addAll(oL); }
+                    if (!sL.isEmpty()) { currentData[0].add("__header_service__");    currentHeaders[0].add("__header_service__");    currentData[0].addAll(sL); }
                 } else if (tab == 1) {
                     for (int _i = 0; _i < originalFriends.size(); _i++) {
                         String wxid = (String) originalFriends.get(_i);
@@ -2561,6 +2568,15 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                         currentData[0].add(wxid);
                     }
                 } else if (tab == 3) {
+                    for (int _i = 0; _i < ds_enterpriseWxids.size(); _i++) {
+                        String wxid = (String) ds_enterpriseWxids.get(_i);
+                        if (!kwl.isEmpty()) {
+                            String name = (String) cachedFriendNameMap.get(wxid); if (name == null) name = "";
+                            if (!(name + " " + wxid).toLowerCase().contains(kwl)) continue;
+                        }
+                        currentData[0].add(wxid);
+                    }
+                } else if (tab == 4) {
                     for (int _i = 0; _i < ds_officialWxids.size(); _i++) {
                         String wxid = (String) ds_officialWxids.get(_i);
                         if (!kwl.isEmpty()) {
@@ -2569,7 +2585,7 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                         }
                         currentData[0].add(wxid);
                     }
-                } else if (tab == 4) {
+                } else if (tab == 5) {
                     for (int _i = 0; _i < ds_serviceWxids.size(); _i++) {
                         String wxid = (String) ds_serviceWxids.get(_i);
                         if (!kwl.isEmpty()) {
@@ -2595,7 +2611,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             }
         };
 
-        // ── renderCurrentTab：填数据 + notifyDataSetChanged（替代原分批建View方案）──
         final Runnable[] renderCurrentTab = new Runnable[1];
         renderCurrentTab[0] = new Runnable() {
             public void run() {
@@ -2610,10 +2625,11 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
                 for (String wxid : ds_alreadyAdded) {
                     boolean belongs;
                     if (tab == 0) { belongs = true; }
-                    else if (tab == 1) { belongs = !wxid.endsWith("@chatroom") && !ds_officialFull.contains(wxid) && !ds_serviceFull.contains(wxid); }
+                    else if (tab == 1) { belongs = !wxid.endsWith("@chatroom") && !ds_officialFull.contains(wxid) && !ds_serviceFull.contains(wxid) && !ds_enterpriseFull.contains(wxid); }
                     else if (tab == 2) { belongs = wxid.endsWith("@chatroom"); }
-                    else if (tab == 3) { belongs = ds_officialFull.contains(wxid); }
-                    else if (tab == 4) { belongs = ds_serviceFull.contains(wxid); }
+                    else if (tab == 3) { belongs = ds_enterpriseFull.contains(wxid); }
+                    else if (tab == 4) { belongs = ds_officialFull.contains(wxid); }
+                    else if (tab == 5) { belongs = ds_serviceFull.contains(wxid); }
                     else {
                         String[] lInfo = (String[]) ds_labels.get(tab - TAB_FIXED);
                         java.util.List allM = (java.util.List) ds_labelMembers.get(lInfo[0]);
@@ -2627,7 +2643,7 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             }
         };
 
-        int tab0Total = originalFriends.size() + ds_officialWxids.size() + ds_serviceWxids.size();
+        int tab0Total = originalFriends.size() + ds_enterpriseWxids.size() + ds_officialWxids.size() + ds_serviceWxids.size();
         infoView.setText("当前 Tab 可选：" + tab0Total + " 个"
             + "　|　分组已有成员：" + ds_alreadyAdded.size() + " 个（当前tab）");
         showDialogFullish(_bSpec);
@@ -2635,7 +2651,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
 
         renderCurrentTab[0].run();
 
-        // ── Tab 按钮点击（所有Tab，含标签Tab）──
         Button[] _allBtnsRef = (Button[]) tabButtonsHolder[0];
         for (int _t = 0; _t < totalTabs; _t++) {
             _allBtnsRef[_t].setOnClickListener(new View.OnClickListener() {
@@ -2647,7 +2662,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             });
         }
 
-        // ── 搜索 / 清空 ──
         searchBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { renderCurrentTab[0].run(); }
         });
@@ -2658,7 +2672,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             }
         });
 
-        // ── 全选 / 反选（操作Set + notify，无需遍历View）──
         selectAllBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 selectedWxids.addAll(currentDisplay);
@@ -2676,7 +2689,6 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             }
         });
 
-        // ── 确定添加 / 保存 / 返回 ──
         confirmBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 processFriendSelection(selectedWxids, originalFriends, currentDisplay,
@@ -2773,19 +2785,17 @@ private void processFriendSelection(java.util.Set<String> selectedWxids,
         if (closeDialog) {
             dialog.dismiss();
         } else {
-            // 从各数据源移除已添加项，防止重复添加
             originalFriends.removeAll(toAdd);
             currentDisplay.removeAll(toAdd);
             ds_officialWxids.removeAll(toAdd);
             ds_serviceWxids.removeAll(toAdd);
+            ds_enterpriseWxids.removeAll(toAdd);
             for (java.util.List<String> members : ds_labelMembers.values()) {
                 members.removeAll(toAdd);
             }
-            // 从currentData[0]里也移除（保持ListView数据和数据源一致）
             currentData[0].removeAll(toAdd);
 
             selectedWxids.clear();
-            // notifyDataSetChanged让ListView刷新可见行（CheckBox联动数据Set已清空）
             tabAdapter[0].notifyDataSetChanged();
 
             if (infoView != null) {
