@@ -327,6 +327,7 @@ private boolean avatarInitialLoadDone = false;
 private java.util.List<String> cachedFriendWxidList = null;
 private java.util.Map<String, String> cachedFriendNameMap = null;
 private long friendListCacheTime = 0;
+private long officialCacheTime = 0;   // 公众号+标签缓存时间戳（同 CACHE_DURATION）
 private static final long CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
 
 // 搜索预处理索引：wxid → lowercase(昵称+wxid)，在 getCachedFriendList 后台一次性生成
@@ -1102,6 +1103,8 @@ private void runIncrementalSync(final Runnable onComplete) {
             try {
                 // 同步时清空黑名单，允许重新尝试（联系人头像URL可能已更新）
                 clearNoUrlCache();
+                // 强制下次同步后重新查询WCDB公众号/标签（可能有新增）
+                synchronized (wcdbCacheLock) { officialCacheTime = 0; }
                 // 强制刷新联系人列表（忽略5分钟缓存）
                 synchronized (wcdbCacheLock) { friendListCacheTime = 0; }
                 getCachedFriendList();
@@ -1981,6 +1984,12 @@ private void readWcdbCursor(Object cursor, java.util.List<String> wxidList,
  */
 private void loadWcdbOfficialAccounts(java.util.Map<String, String> nameMap) {
     synchronized (wcdbCacheLock) {
+    // 缓存有效则直接使用，避免每次打开批量添加页面都重新扫描WCDB
+    long _now = System.currentTimeMillis();
+    if (cachedOfficialWxids != null && cachedServiceWxids != null
+            && (_now - officialCacheTime) < CACHE_DURATION) {
+        return;
+    }
     cachedOfficialWxids = new java.util.ArrayList<>();
     cachedServiceWxids  = new java.util.ArrayList<>();
     try {
@@ -2019,6 +2028,7 @@ private void loadWcdbOfficialAccounts(java.util.Map<String, String> nameMap) {
                 }
             } finally { cl.invoke(cursor); }
         } catch (Exception ignore) {}
+        officialCacheTime = System.currentTimeMillis();
         log("[wcdb] 订阅号=" + cachedOfficialWxids.size() + " 服务号=" + cachedServiceWxids.size());
     } catch (Exception e) {
         log("[wcdb] loadWcdbOfficialAccounts 失败: " + e.getMessage());
@@ -2048,6 +2058,11 @@ private void loadWcdbOfficialAccounts(java.util.Map<String, String> nameMap) {
  */
 private void loadWcdbLabels(java.util.List<String> availableFriends) {
     synchronized (wcdbCacheLock) {
+    // 缓存有效则直接使用（与loadWcdbOfficialAccounts共享officialCacheTime）
+    long _nowL = System.currentTimeMillis();
+    if (cachedLabels != null && (_nowL - officialCacheTime) < CACHE_DURATION) {
+        return;
+    }
     cachedLabels       = new java.util.ArrayList<>();
     cachedLabelMembers = new java.util.HashMap<>();
     try {
@@ -2159,82 +2174,76 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
         uiToast("无法获取当前Activity");
         return;
     }
-
     isDialogShowing = true;
     uiToast("正在加载联系人列表...");
 
     new Thread(new Runnable() {
         public void run() {
             try {
-                JSONObject currentGroup = groupItems.getJSONObject(groupIndex);
-                JSONArray currentIdList = currentGroup.getJSONArray("idList");
+                final JSONObject currentGroup = groupItems.getJSONObject(groupIndex);
+                final JSONArray  currentIdList = currentGroup.getJSONArray("idList");
 
                 getCachedFriendList();
-                // 先加载公众号数据（不依赖 cachedFriendWxidList）
                 loadWcdbOfficialAccounts(cachedFriendNameMap);
 
-                // 综合判断：好友/群聊、订阅号、服务号全部为空才算真正无数据
-                boolean noFriends   = cachedFriendWxidList == null || cachedFriendWxidList.isEmpty();
-                boolean noOfficial  = (cachedOfficialWxids == null || cachedOfficialWxids.isEmpty())
-                                   && (cachedServiceWxids  == null || cachedServiceWxids.isEmpty());
+                boolean noFriends  = cachedFriendWxidList == null || cachedFriendWxidList.isEmpty();
+                boolean noOfficial = (cachedOfficialWxids == null || cachedOfficialWxids.isEmpty())
+                                  && (cachedServiceWxids  == null || cachedServiceWxids.isEmpty());
                 if (noFriends && noOfficial) {
                     new Handler(Looper.getMainLooper()).post(new Runnable() {
                         public void run() {
                             isDialogShowing = false;
-                            log("无法获取任何联系人数据: friendListCacheTime=" + friendListCacheTime);
+                            log("无法获取任何联系人数据");
                             uiToast("无法获取联系人列表，请检查API权限");
                         }
                     });
                     return;
                 }
 
-                final java.util.List<String> availableFriends = new java.util.ArrayList<>();
-                int excludedCount = 0;
-
-                // fix: 先将 currentIdList 转为 HashSet，过滤从 O(n²) 降为 O(n)
-                java.util.Set<String> alreadyAdded = new java.util.HashSet<>();
+                final java.util.Set<String> alreadyAdded = new java.util.HashSet<>();
                 for (int i = 0; i < currentIdList.length(); i++) {
                     alreadyAdded.add(currentIdList.getString(i));
                 }
-                for (String friendWxid : cachedFriendWxidList) {
-                    if (alreadyAdded.contains(friendWxid)) {
-                        excludedCount++;
-                    } else {
-                        availableFriends.add(friendWxid);
+
+                final java.util.List<String> availableFriends = new java.util.ArrayList<>();
+                int excluded = 0;
+                if (cachedFriendWxidList != null) {
+                    for (String w : cachedFriendWxidList) {
+                        if (alreadyAdded.contains(w)) excluded++;
+                        else availableFriends.add(w);
                     }
                 }
+                final int finalExcluded = excluded;
 
-                // 加载标签（过滤出 availableFriends 中的成员，公众号已在前面加载过）
                 loadWcdbLabels(availableFriends);
 
-                // 初始化 DialogState：每次打开对话框重置，填充本次数据
+                // 填充 ds_*
                 resetDialogState();
                 ds_alreadyAdded = alreadyAdded;
                 ds_officialFull = (cachedOfficialWxids != null)
                     ? new java.util.HashSet<>(cachedOfficialWxids) : new java.util.HashSet<>();
-                ds_serviceFull  = (cachedServiceWxids != null)
-                    ? new java.util.HashSet<>(cachedServiceWxids) : new java.util.HashSet<>();
+                ds_serviceFull  = (cachedServiceWxids  != null)
+                    ? new java.util.HashSet<>(cachedServiceWxids)  : new java.util.HashSet<>();
                 if (cachedOfficialWxids != null)
                     for (String w : cachedOfficialWxids)
                         if (!alreadyAdded.contains(w)) ds_officialWxids.add(w);
                 if (cachedServiceWxids != null)
                     for (String w : cachedServiceWxids)
                         if (!alreadyAdded.contains(w)) ds_serviceWxids.add(w);
-                ds_labels       = cachedLabels != null
+                ds_labels = cachedLabels != null
                     ? new java.util.ArrayList<>(cachedLabels) : new java.util.ArrayList<>();
-                // 深拷贝 labelMembers，避免与全局缓存共享引用（后台线程重建缓存时不影响本次对话框）
                 ds_labelMembers = new java.util.HashMap<>();
                 if (cachedLabelMembers != null) {
-                    for (java.util.Map.Entry<String, java.util.List<String>> entry : cachedLabelMembers.entrySet()) {
-                        ds_labelMembers.put(entry.getKey(), new java.util.ArrayList<>(entry.getValue()));
+                    for (java.util.Map.Entry<String, java.util.List<String>> e2 : cachedLabelMembers.entrySet()) {
+                        ds_labelMembers.put(e2.getKey(), new java.util.ArrayList<>(e2.getValue()));
                     }
                 }
 
-                final int finalExcludedCount = excludedCount;
+                // 数据就绪，post 到主线程创建对话框并直接渲染（和旧方案完全一致）
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
                     public void run() {
                         createBatchAddDialog(act, groupIndex, groupItems, groupFile, currentWxid,
-                            currentIdList, availableFriends, cachedFriendNameMap, finalExcludedCount);
+                            currentIdList, availableFriends, finalExcluded);
                     }
                 });
 
@@ -2242,8 +2251,8 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
                     public void run() {
                         isDialogShowing = false;
-                        log("创建批量添加对话框失败: " + e.getMessage());
-                        uiToast("创建批量添加对话框失败");
+                        log("加载联系人数据失败: " + e.getMessage());
+                        uiToast("加载联系人数据失败");
                     }
                 });
             }
@@ -2254,20 +2263,18 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
 /**
  * 创建批量添加对话框UI
  * Tab 布局：全部 | 好友 | 群聊 | 订阅号 | 服务号 | [标签1] [标签2] ...
- * 标签 Tab 可筛选好友+群聊（按 keyword 搜索）
  */
 private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupItems, File groupFile,
                                 String currentWxid, JSONArray currentIdList,
-                                java.util.List<String> availableFriends,
-                                java.util.Map<String, String> friendNameMap, int excludedCount) {
+                                final java.util.List availableFriends,
+                                final int excludedCount) {
     try {
-        // ── 动态 Tab 数量：0=全部,1=好友,2=群聊,3=订阅号,4=服务号,5..N=标签 ──
-        final int TAB_FIXED = 5; // 前5个固定 Tab
+        final int TAB_FIXED = 5;
         final int totalTabs = TAB_FIXED + ds_labels.size();
 
-        final java.util.List<String> originalFriends = new java.util.ArrayList<>(availableFriends);
-        final java.util.List<String> currentDisplay  = new java.util.ArrayList<>(originalFriends);
-        final java.util.Set<String>  selectedWxids   = new java.util.HashSet<>();
+        final java.util.List originalFriends = new java.util.ArrayList(availableFriends);
+        final java.util.List currentDisplay = new java.util.ArrayList();
+        final java.util.Set selectedWxids = new java.util.HashSet();
 
         Object[] _bSpec = buildStandardDialog(act, "批量添加联系人", 18,
             dp(24), dp(24), dp(24), dp(16));
@@ -2288,22 +2295,24 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         tabScroll.setHorizontalScrollBarEnabled(false);
         tabScroll.setPadding(0, 0, 0, dp(10));
 
-        LinearLayout tabLayout = new LinearLayout(act);
+        final LinearLayout tabLayout = new LinearLayout(act);
         tabLayout.setOrientation(LinearLayout.HORIZONTAL);
         tabScroll.addView(tabLayout);
 
-        // 固定 Tab 标题
+        // 所有Tab按钮（含标签Tab）在数据就绪后统一创建，无需动态追加
+        final Object[] tabButtonsHolder = new Object[1];
+        tabButtonsHolder[0] = new Button[totalTabs];
+        final int[] totalTabsRef = new int[]{totalTabs};
+
         final String[] fixedNames = {"全部", "好友", "群聊", "订阅号", "服务号"};
-        final Button[] tabButtons = new Button[totalTabs];
-        LinearLayout.LayoutParams firstTabLp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        Button[] _initBtns = (Button[]) tabButtonsHolder[0];
         for (int _t = 0; _t < totalTabs; _t++) {
             String label;
             if (_t < TAB_FIXED) {
                 label = fixedNames[_t];
             } else {
-                String[] lInfo = ds_labels.get(_t - TAB_FIXED);
-                label = lInfo[1]; // labelName
+                String[] lInfo = (String[]) ds_labels.get(_t - TAB_FIXED);
+                label = lInfo[1];
             }
             Button btn = new Button(act);
             btn.setText(label);
@@ -2315,18 +2324,19 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
             if (_t > 0) lp.leftMargin = dp(8);
             btn.setTag(Integer.valueOf(_t));
             tabLayout.addView(btn, lp);
-            tabButtons[_t] = btn;
+            _initBtns[_t] = btn;
         }
         root.addView(tabScroll);
 
-        // ── updateTabStyle：遍历所有按钮 ──
+        // ── updateTabStyle：遍历当前所有按钮 ──
         final Runnable[] updateTabStyle = new Runnable[1];
         updateTabStyle[0] = new Runnable() {
             public void run() {
-                for (int _t = 0; _t < totalTabs; _t++) {
+                Button[] _btns = (Button[]) tabButtonsHolder[0];
+                for (int _t = 0; _t < totalTabsRef[0]; _t++) {
                     boolean active = (currentTab[0] == _t);
-                    tabButtons[_t].setBackground(shapeStrokeInt(active ? CI_ACCENT : CI_BUTTON_BG, dp(6), CI_CARD_STROKE));
-                    tabButtons[_t].setTextColor(active ? Color.WHITE : CI_BUTTON_TEXT);
+                    _btns[_t].setBackground(shapeStrokeInt(active ? CI_ACCENT : CI_BUTTON_BG, dp(6), CI_CARD_STROKE));
+                    _btns[_t].setTextColor(active ? Color.WHITE : CI_BUTTON_TEXT);
                 }
             }
         };
@@ -2424,6 +2434,9 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         listView.setBackgroundColor(Color.TRANSPARENT);
         listView.setCacheColorHint(Color.TRANSPARENT);
         listView.setScrollbarFadingEnabled(true);
+        // 底部padding让最后一行能完整滚出，setClipToPadding(false)使padding区域仍可滚动到
+        listView.setPadding(dp(8), dp(6), dp(8), dp(48));
+        listView.setClipToPadding(false);
 
         // TYPE_HEADER=0（分类标题），TYPE_ROW=1（联系人）
         // ListView只为可见行调用getView，滑动时复用convertView
@@ -2620,12 +2633,12 @@ private void createBatchAddDialog(Activity act, int groupIndex, JSONArray groupI
         showDialogFullish(_bSpec);
         if (!dialog.isShowing()) return;
 
-        // 初始渲染Tab0（无需延迟，ListView只建可见行，极快）
         renderCurrentTab[0].run();
 
-        // ── Tab 按钮点击 ──
+        // ── Tab 按钮点击（所有Tab，含标签Tab）──
+        Button[] _allBtnsRef = (Button[]) tabButtonsHolder[0];
         for (int _t = 0; _t < totalTabs; _t++) {
-            tabButtons[_t].setOnClickListener(new View.OnClickListener() {
+            _allBtnsRef[_t].setOnClickListener(new View.OnClickListener() {
                 public void onClick(View v) {
                     currentTab[0] = ((Integer) v.getTag()).intValue();
                     updateTabStyle[0].run();
