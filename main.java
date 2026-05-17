@@ -147,10 +147,7 @@ boolean showAddGroupDialog() {
     }
 
     String currentWxid = getTargetTalker();
-    if (currentWxid == null || currentWxid.isEmpty()) {
-        toast("❌ 无法获取当前聊天对象wxid");
-        return true;
-    }
+    // 允许 currentWxid 为空，用于设置按钮打开的场景
 
     // 每次打开主对话框都触发一次头像预热
     // preloadAvatars 内部通过 avatarBitmapCache / diskFile.exists() 自然跳过已有数据，
@@ -317,7 +314,7 @@ private java.util.Map<String, java.util.List<ImageView>> avatarPendingViews =
 private java.util.concurrent.Semaphore avatarSemaphore =
     new java.util.concurrent.Semaphore(8, true);
 
-// 头像URL黑名单：getAvatarUrl返回空的wxid，持久化到 avatars/no_url.json，重启后跳过
+// 头像URL黑名单：getAvatarUrl返回空的wxid，持久化到 数据目录/no_url.json，重启后跳过
 // 避免对无法获取URL的wxid反复调用WAuxiliary网络API导致框架报错"解析数据时发生异常"
 private java.util.Set<String> avatarNoUrlSet =
     java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
@@ -1056,12 +1053,7 @@ private void loadNoUrlCache() {
                 String line;
                 while ((line = br.readLine()) != null) sb.append(line);
             } finally { try { br.close(); } catch (Exception ignore) {} }
-            String content = sb.toString().trim();
-            if (content.isEmpty()) {
-                log("[noUrl] 黑名单文件为空，跳过加载");
-                return;
-            }
-            JSONArray arr = new JSONArray(content);
+            JSONArray arr = new JSONArray(sb.toString());
             for (int i = 0; i < arr.length(); i++) {
                 String wxid = arr.optString(i, null);
                 if (wxid != null && !wxid.isEmpty()) avatarNoUrlSet.add(wxid);
@@ -1324,10 +1316,6 @@ private void submitAvatarTask(final String wxid, final ImageView avatarView) {
             try {
                 String avatarUrl = getAvatarUrl(wxid, true);
                 if (avatarUrl == null || avatarUrl.isEmpty()) {
-                    log("[头像] 大图URL获取失败，尝试小图: " + wxid);
-                    avatarUrl = getAvatarUrl(wxid);
-                }
-                if (avatarUrl == null || avatarUrl.isEmpty()) {
                     // URL获取不到：加入黑名单，后续跳过，避免反复调用WAuxiliary API
                     addToNoUrlCache(wxid);
                     log("[noUrl] 无法获取头像URL，加入黑名单: " + wxid);
@@ -1560,51 +1548,96 @@ void showGroupSelectionDialog(JSONArray groupItems, String currentWxid, File gro
                 LinearLayout root = (LinearLayout) _spec[1];
                 int width = ((Integer) _spec[2]).intValue();
 
-                TextView info = new TextView(act);
-                info.setText("请选择要将该联系人添加到的分组");
-                styleTextSecondary(info);
-                info.setPadding(0, 0, 0, dp(16));
-                root.addView(info);
+                // 根据是否有 currentWxid 调整标题和UI
+                if (currentWxid != null && !currentWxid.isEmpty()) {
+                    TextView info = new TextView(act);
+                    info.setText("请选择要将该联系人添加到的分组");
+                    styleTextSecondary(info);
+                    info.setPadding(0, 0, 0, dp(16));
+                    root.addView(info);
 
-                LinearLayout wxidLayout = new LinearLayout(act);
-                wxidLayout.setOrientation(LinearLayout.HORIZONTAL);
-                wxidLayout.setPadding(0, 0, 0, dp(20));
+                    LinearLayout wxidLayout = new LinearLayout(act);
+                    wxidLayout.setOrientation(LinearLayout.HORIZONTAL);
+                    wxidLayout.setPadding(0, 0, 0, dp(20));
 
-                TextView wxidText = new TextView(act);
-                wxidText.setText("联系人wxid: " + currentWxid);
-                styleTextSecondary(wxidText);
-                wxidText.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
-                wxidLayout.addView(wxidText);
+                    TextView wxidText = new TextView(act);
+                    wxidText.setText("联系人wxid: " + currentWxid);
+                    styleTextSecondary(wxidText);
+                    wxidText.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+                    wxidLayout.addView(wxidText);
 
-                Button addGroupBtn = btn(act, "添加分组");
-                addGroupBtn.setTextSize(12);
-                addGroupBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
-                addGroupBtn.setOnClickListener(new View.OnClickListener() {
-                    public void onClick(View v) {
-                        showCreateNewGroupDialog(groupItems, currentWxid, groupFile, d);
-                    }
-                });
-                wxidLayout.addView(addGroupBtn);
+                    Button addGroupBtn = btn(act, "添加分组");
+                    addGroupBtn.setTextSize(12);
+                    addGroupBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
+                    addGroupBtn.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View v) {
+                            showCreateNewGroupDialog(groupItems, currentWxid, groupFile, d);
+                        }
+                    });
+                    wxidLayout.addView(addGroupBtn);
 
-                // 🔄 同步按钮：手动触发增量检测（清理孤立头像 + 新增下载 + URL变化）
-                Button syncBtn = btnSmall(act, "🔄 同步");
-                LinearLayout.LayoutParams syncLP = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                syncLP.leftMargin = dp(8);
-                syncBtn.setOnClickListener(new View.OnClickListener() {
-                    public void onClick(View v) {
-                        syncBtn.setEnabled(false);
-                        syncBtn.setText("同步中...");
-                        runIncrementalSync(new Runnable() {
-                            public void run() {
-                                syncBtn.setEnabled(true);
-                                syncBtn.setText("🔄 同步");
-                            }
-                        });
-                    }
-                });
-                wxidLayout.addView(syncBtn, syncLP);
-                root.addView(wxidLayout);
+                    // 🔄 同步按钮：手动触发增量检测（清理孤立头像 + 新增下载 + URL变化）
+                    Button syncBtn = btnSmall(act, "🔄 同步");
+                    LinearLayout.LayoutParams syncLP = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    syncLP.leftMargin = dp(8);
+                    syncBtn.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View v) {
+                            syncBtn.setEnabled(false);
+                            syncBtn.setText("同步中...");
+                            runIncrementalSync(new Runnable() {
+                                public void run() {
+                                    syncBtn.setEnabled(true);
+                                    syncBtn.setText("🔄 同步");
+                                }
+                            });
+                        }
+                    });
+                    wxidLayout.addView(syncBtn, syncLP);
+                    root.addView(wxidLayout);
+                } else {
+                    // 设置模式：没有当前联系人，调整UI
+                    TextView info = new TextView(act);
+                    info.setText("分组管理");
+                    styleTextSecondary(info);
+                    info.setPadding(0, 0, 0, dp(16));
+                    root.addView(info);
+
+                    // 只显示同步按钮和添加分组按钮
+                    LinearLayout buttonLayout = new LinearLayout(act);
+                    buttonLayout.setOrientation(LinearLayout.HORIZONTAL);
+                    buttonLayout.setPadding(0, 0, 0, dp(20));
+
+                    Button addGroupBtn = btn(act, "添加分组");
+                    addGroupBtn.setTextSize(12);
+                    addGroupBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
+                    addGroupBtn.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View v) {
+                            showCreateNewGroupDialog(groupItems, null, groupFile, d);
+                        }
+                    });
+                    buttonLayout.addView(addGroupBtn);
+
+                    // 🔄 同步按钮
+                    Button syncBtn = btnSmall(act, "🔄 同步");
+                    LinearLayout.LayoutParams syncLP = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    syncLP.leftMargin = dp(8);
+                    syncBtn.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View v) {
+                            syncBtn.setEnabled(false);
+                            syncBtn.setText("同步中...");
+                            runIncrementalSync(new Runnable() {
+                                public void run() {
+                                    syncBtn.setEnabled(true);
+                                    syncBtn.setText("🔄 同步");
+                                }
+                            });
+                        }
+                    });
+                    buttonLayout.addView(syncBtn, syncLP);
+                    root.addView(buttonLayout);
+                }
 
                 ScrollView scrollView = new ScrollView(act);
                 scrollView.setBackground(shapeStrokeInt(CI_CARD_BG, dp(12), CI_CARD_STROKE));
@@ -1721,17 +1754,20 @@ void showGroupSelectionDialog(JSONArray groupItems, String currentWxid, File gro
                                 moveLayout.addView(moveDownBtn);
                                 groupItem.addView(moveLayout);
 
-                                Button selectBtn = btn(act, "选择");
-                                selectBtn.setTextSize(12);
-                                selectBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
-                                selectBtn.setOnClickListener(new View.OnClickListener() {
-                                    public void onClick(View v) {
-                                        handleGroupSelection(groupTitleStr, groupIdList, currentWxid, groupItems, groupFile);
-                                        d.dismiss();
-                                        isDialogShowing = false;
-                                    }
-                                });
-                                groupItem.addView(selectBtn);
+                                // 只在有 currentWxid 时才显示"选择"按钮
+                                if (currentWxid != null && !currentWxid.isEmpty()) {
+                                    Button selectBtn = btn(act, "选择");
+                                    selectBtn.setTextSize(12);
+                                    selectBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
+                                    selectBtn.setOnClickListener(new View.OnClickListener() {
+                                        public void onClick(View v) {
+                                            handleGroupSelection(groupTitleStr, groupIdList, currentWxid, groupItems, groupFile);
+                                            d.dismiss();
+                                            isDialogShowing = false;
+                                        }
+                                    });
+                                    groupItem.addView(selectBtn);
+                                }
 
                                 groupItem.setOnClickListener(new View.OnClickListener() {
                                     public void onClick(View v) {
@@ -2768,6 +2804,12 @@ private void updateBatchAddInfoText(Dialog dialog, int availableCount, int exclu
  * 处理分组选择（选择按钮直接将当前wxid加入分组）
  */
 void handleGroupSelection(String groupTitle, JSONArray idList, String currentWxid, JSONArray groupItems, File groupFile) {
+    // 添加空值检查
+    if (currentWxid == null || currentWxid.isEmpty()) {
+        uiToast("⚠️ 无法添加：没有当前联系人");
+        return;
+    }
+    
     try {
         boolean exists = false;
         for (int i = 0; i < idList.length(); i++) {
