@@ -28,8 +28,6 @@ import de.robv.android.xposed.XposedHelpers;
 private java.util.List<String> cachedOfficialWxids;
 private java.util.List<String> cachedServiceWxids;
 private java.util.List<String> cachedEnterpriseWxids;
-private java.util.List<String[]> cachedLabels;
-private java.util.Map<String, java.util.List<String>> cachedLabelMembers;
 private final Object wcdbCacheLock = new Object();
 
 private java.util.Set<String> ds_alreadyAdded    = new java.util.HashSet<>();
@@ -131,6 +129,13 @@ boolean onClickSendBtn(String text) {
         return true;
     }
     return false;
+}
+
+/**
+ * 打开插件设置页面
+ */
+void openSettings() {
+    showAddGroupDialog();
 }
 
 /**
@@ -327,6 +332,22 @@ private java.util.Map<String, String> cachedFriendNameMap = null;
 private long friendListCacheTime = 0;
 private long officialCacheTime = 0;   // 公众号+标签缓存时间戳（同 CACHE_DURATION）
 private static final long CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
+
+/**
+ * 从 ContactLabelBean 获取标签 ID
+ */
+private String getContactLabelId(Object label) {
+    java.lang.reflect.Method m = label.getClass().getMethod("getId");
+    return String.valueOf(m.invoke(label));
+}
+
+/**
+ * 从 ContactLabelBean 获取标签名称
+ */
+private String getContactLabelName(Object label) {
+    java.lang.reflect.Method m = label.getClass().getMethod("getName");
+    return String.valueOf(m.invoke(label));
+}
 
 // 搜索预处理索引：wxid → lowercase(昵称+wxid)，在 getCachedFriendList 后台一次性生成
 private java.util.Map<String, String> cachedSearchIndex = new java.util.HashMap<>();
@@ -969,7 +990,11 @@ void styleHeader(TextView tv) {
 private View createMemberInfoView(Context context, String wxid) {
     String friendName = "";
     try {
-        friendName = getFriendName(wxid);
+        // 先尝试获取备注名，如果为空再获取昵称
+        friendName = getFriendRemarkName(wxid);
+        if (friendName == null || friendName.isEmpty()) {
+            friendName = getFriendNickname(wxid);
+        }
     } catch (Throwable e) {}
 
     LinearLayout infoLayout = new LinearLayout(context);
@@ -1014,7 +1039,7 @@ private File getAvatarFile(String wxid) {
  * 头像URL黑名单文件路径
  */
 private File getNoUrlFile() {
-    return new File(getAvatarCacheDir(), "no_url.json");
+    return new File(getGroupDir(), "no_url.json");
 }
 
 /**
@@ -1031,7 +1056,12 @@ private void loadNoUrlCache() {
                 String line;
                 while ((line = br.readLine()) != null) sb.append(line);
             } finally { try { br.close(); } catch (Exception ignore) {} }
-            JSONArray arr = new JSONArray(sb.toString());
+            String content = sb.toString().trim();
+            if (content.isEmpty()) {
+                log("[noUrl] 黑名单文件为空，跳过加载");
+                return;
+            }
+            JSONArray arr = new JSONArray(content);
             for (int i = 0; i < arr.length(); i++) {
                 String wxid = arr.optString(i, null);
                 if (wxid != null && !wxid.isEmpty()) avatarNoUrlSet.add(wxid);
@@ -1294,6 +1324,10 @@ private void submitAvatarTask(final String wxid, final ImageView avatarView) {
             try {
                 String avatarUrl = getAvatarUrl(wxid, true);
                 if (avatarUrl == null || avatarUrl.isEmpty()) {
+                    log("[头像] 大图URL获取失败，尝试小图: " + wxid);
+                    avatarUrl = getAvatarUrl(wxid);
+                }
+                if (avatarUrl == null || avatarUrl.isEmpty()) {
                     // URL获取不到：加入黑名单，后续跳过，避免反复调用WAuxiliary API
                     addToNoUrlCache(wxid);
                     log("[noUrl] 无法获取头像URL，加入黑名单: " + wxid);
@@ -1324,27 +1358,27 @@ private void submitAvatarTask(final String wxid, final ImageView avatarView) {
                 final String finalUrl = avatarUrl;
                 File tmpFile = new File(getAvatarCacheDir(), wxid.replace("@","_").replace(":","_").replace("/","_") + ".tmp");
                 download(finalUrl, tmpFile.getAbsolutePath(), null,
-                    new me.hd.wauxv.plugin.api.callback.PluginCallBack.DownloadCallback() {
-                        public void onSuccess(File file) {
+                    new java.util.function.Consumer<File>() {
+                        public void accept(File file) {
+                            log("[头像] download 回调: " + wxid + ", file=" + (file != null ? file.getAbsolutePath() : "null"));
                             if (!downloadDone.compareAndSet(false, true)) return; // 超时已处理
                             try {
-                                if (diskFile.exists()) diskFile.delete();
-                                file.renameTo(diskFile);
-                                try { putString("avatar_url_" + wxid, finalUrl); } catch (Exception ignore) {}
-                                decodeAndShow(diskFile, wxid, avatarView);
+                                if (file != null) {
+                                    log("[头像] 下载成功: " + wxid);
+                                    if (diskFile.exists()) diskFile.delete();
+                                    file.renameTo(diskFile);
+                                    try { putString("avatar_url_" + wxid, finalUrl); } catch (Exception ignore) {}
+                                    decodeAndShow(diskFile, wxid, avatarView);
+                                } else {
+                                    log("[头像] 下载失败，加入黑名单: " + wxid);
+                                    addToNoUrlCache(wxid);
+                                }
                             } catch (Exception e) {
                                 log("头像保存失败 " + wxid + ": " + e.getMessage());
                             } finally {
                                 avatarLoadingSet.remove(wxid);
                                 avatarSemaphore.release();
                             }
-                        }
-                        public void onFailure(String error) {
-                            if (!downloadDone.compareAndSet(false, true)) return; // 超时已处理
-                            log("头像下载失败，加入黑名单 " + wxid + ": " + error);
-                            addToNoUrlCache(wxid);
-                            avatarLoadingSet.remove(wxid);
-                            avatarSemaphore.release();
                         }
                     });
                 // 超时监控线程：download()有时静默超时不触发任何回调，15秒后强制处理
@@ -1371,7 +1405,7 @@ private void submitAvatarTask(final String wxid, final ImageView avatarView) {
         }
     }).start();
 }
-
+                    
 /**
  * 向内存缓存存入 Bitmap，超过 AVATAR_CACHE_MAX 时删除最旧的一半
  * Bug3 fix：eviction 整块 synchronized(avatarBitmapCache)，防止多线程迭代冲突
@@ -2042,135 +2076,7 @@ private void loadWcdbOfficialAccounts(java.util.Map<String, String> nameMap) {
     }
 }
 
-/**
- * 从 WCDB 加载标签定义及各标签成员
- * 成员列表只保留 availableFriends 中存在的 wxid（跨 Tab 可见性过滤）
- */
-/**
- * 从 WCDB 加载标签定义及各标签成员。
- *
- * 优化前：N+2 次 SQL（PRAGMA + ContactLabel + 每标签一次 LIKE 全表扫）
- *   每个 LIKE 扫整张 rcontact，N 个标签 = N 次 O(rows) 扫描，极慢。
- *
- * 优化后：固定 3 次 SQL，在 Java 内存里完成分组：
- *   1. PRAGMA table_info(rcontact)  → 找 labelIds 字段名（版本间字段名不固定）
- *   2. SELECT FROM ContactLabel     → 全量标签定义（id, name），用 LinkedHashMap 保序
- *   3. SELECT username, labelField FROM rcontact
- *      WHERE labelField IS NOT NULL AND labelField != ''
- *      → 一次全表扫，只读有标签的行；
- *        Java 里按逗号分割 labelIds 字串，构建 Map<labelId, List<wxid>> 反向索引
- *
- * 只保留 availableFriends 中的 wxid（过滤出对话框可见的联系人）。
- */
-private void loadWcdbLabels(java.util.List<String> availableFriends) {
-    synchronized (wcdbCacheLock) {
-    // 缓存有效则直接使用（与loadWcdbOfficialAccounts共享officialCacheTime）
-    long _nowL = System.currentTimeMillis();
-    if (cachedLabels != null && (_nowL - officialCacheTime) < CACHE_DURATION) {
-        return;
-    }
-    cachedLabels       = new java.util.ArrayList<>();
-    cachedLabelMembers = new java.util.HashMap<>();
-    try {
-        Object db = getWcdbInstance();
-        if (db == null) { log("[wcdb] 标签加载：DB实例为null"); return; }
 
-        // ① 找 rcontact 中含 "label" 的字段名（微信版本间字段名不固定）
-        String labelIdsField = null;
-        Object pragma = wcdbRawQuery(db, "PRAGMA table_info(rcontact)");
-        if (pragma != null) {
-            try {
-                Class cc = pragma.getClass();
-                java.lang.reflect.Method mn = cc.getMethod("moveToNext");
-                java.lang.reflect.Method gs = cc.getMethod("getString", int.class);
-                java.lang.reflect.Method gi = cc.getMethod("getColumnIndex", String.class);
-                java.lang.reflect.Method cl = cc.getMethod("close");
-                int nc = (Integer) gi.invoke(pragma, "name");
-                try {
-                    while ((Boolean) mn.invoke(pragma)) {
-                        String col = (String) gs.invoke(pragma, nc);
-                        if (col != null && col.toLowerCase().contains("label"))
-                            labelIdsField = col;
-                    }
-                } finally { cl.invoke(pragma); }
-            } catch (Exception ignore) {}
-        }
-        if (labelIdsField == null) { log("[wcdb] 未找到 rcontact 标签字段"); return; }
-
-        // ② 全量标签定义：用 LinkedHashMap 保持 ContactLabel 表的原始顺序
-        java.util.Map<String, String> labelNameMap = new java.util.LinkedHashMap<>();
-        Object labelsCur = wcdbRawQuery(db,
-            "SELECT labelID, labelName FROM ContactLabel ORDER BY labelID");
-        if (labelsCur == null) return;
-        try {
-            Class cc  = labelsCur.getClass();
-            java.lang.reflect.Method mn  = cc.getMethod("moveToNext");
-            java.lang.reflect.Method gs0 = cc.getMethod("getString", int.class);
-            java.lang.reflect.Method cl  = cc.getMethod("close");
-            try {
-                while ((Boolean) mn.invoke(labelsCur)) {
-                    String lid   = (String) gs0.invoke(labelsCur, 0);
-                    String lname = (String) gs0.invoke(labelsCur, 1);
-                    if (lid != null) labelNameMap.put(lid, lname != null ? lname : "");
-                }
-            } finally { cl.invoke(labelsCur); }
-        } catch (Exception ignore) {}
-        if (labelNameMap.isEmpty()) { log("[wcdb] ContactLabel 表为空"); return; }
-
-        // ③ 一次全表扫 rcontact：只读有标签的行（labelField 非空），
-        //    在 Java 内存里按逗号分割 labelIds，构建反向索引 Map<labelId, List<wxid>>
-        java.util.Set<String> friendSet = new java.util.HashSet<>(availableFriends);
-        java.util.Map<String, java.util.List<String>> tempMap = new java.util.HashMap<>();
-
-        Object rcontactCur = wcdbRawQuery(db,
-            "SELECT username, " + labelIdsField + " FROM rcontact " +
-            "WHERE " + labelIdsField + " IS NOT NULL AND " + labelIdsField + " != ''");
-        if (rcontactCur != null) {
-            try {
-                Class cc = rcontactCur.getClass();
-                java.lang.reflect.Method mn = cc.getMethod("moveToNext");
-                java.lang.reflect.Method gs = cc.getMethod("getString", int.class);
-                java.lang.reflect.Method cl = cc.getMethod("close");
-                try {
-                    while ((Boolean) mn.invoke(rcontactCur)) {
-                        String wxid   = (String) gs.invoke(rcontactCur, 0);
-                        String idsStr = (String) gs.invoke(rcontactCur, 1);
-                        if (wxid == null || wxid.isEmpty()) continue;
-                        if (idsStr == null || idsStr.isEmpty()) continue;
-                        if (!friendSet.contains(wxid)) continue; // 只保留可见联系人
-                        // labelIds 字段格式可能是 "1,3,7" 或 ",1,3," 等，split 统一处理
-                        String[] ids = idsStr.split(",");
-                        for (int k = 0; k < ids.length; k++) {
-                            String lid = ids[k].trim();
-                            if (lid.isEmpty()) continue;
-                            java.util.List<String> bucket = (java.util.List<String>) tempMap.get(lid);
-                            if (bucket == null) {
-                                bucket = new java.util.ArrayList<>();
-                                tempMap.put(lid, bucket);
-                            }
-                            bucket.add(wxid);
-                        }
-                    }
-                } finally { cl.invoke(rcontactCur); }
-            } catch (Exception ignore) {}
-        }
-
-        // ④ 按 ContactLabel 顺序组装最终结果（保证 Tab 标签顺序与微信一致）
-        java.util.Iterator<java.util.Map.Entry<String, String>> it = labelNameMap.entrySet().iterator();
-        while (it.hasNext()) {
-            java.util.Map.Entry<String, String> entry = it.next();
-            String lid   = entry.getKey();
-            String lname = entry.getValue();
-            cachedLabels.add(new String[]{lid, lname});
-            java.util.List<String> members = (java.util.List<String>) tempMap.get(lid);
-            cachedLabelMembers.put(lid, members != null ? members : new java.util.ArrayList<>());
-        }
-        log("[wcdb] 标签数=" + cachedLabels.size() + "，有成员标签数=" + tempMap.size());
-    } catch (Exception e) {
-        log("[wcdb] loadWcdbLabels 失败: " + e.getMessage());
-    }
-    } // end synchronized (wcdbCacheLock)
-}
 
 
 void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupFile, String currentWxid) {
@@ -2221,7 +2127,30 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
                 }
                 final int finalExcluded = excluded;
 
-                loadWcdbLabels(availableFriends);
+                // 使用官方 API 获取标签
+                log("getContactLabelList 返回类型: " + (getContactLabelList() != null ? getContactLabelList().getClass().getName() : "null"));
+                List labelList = getContactLabelList();
+                log("标签列表原始数量: " + (labelList != null ? labelList.size() : 0));
+                List<String[]> labels = new ArrayList<>();
+                Map<String, List<String>> labelMembers = new HashMap<>();
+
+                if (labelList != null) {
+                    for (Object label : labelList) {
+                        String labelId = getContactLabelId(label);
+                        String labelName = getContactLabelName(label);
+                        labels.add(new String[]{labelId, labelName});
+
+                        List<String> members = getContactByLabelId(labelId);
+                        List<String> filtered = new ArrayList<>();
+                        if (members != null) {
+                            for (String wxid : members) {
+                                if (availableFriends.contains(wxid)) filtered.add(wxid);
+                            }
+                        }
+                        labelMembers.put(labelId, filtered);
+                    }
+                }
+                log("标签加载完成: " + labels.size() + " 个");
 
                 resetDialogState();
                 ds_alreadyAdded = alreadyAdded;
@@ -2240,14 +2169,8 @@ void showBatchAddFriendsDialog(int groupIndex, JSONArray groupItems, File groupF
                 if (cachedEnterpriseWxids != null)
                     for (String w : cachedEnterpriseWxids)
                         if (!alreadyAdded.contains(w)) ds_enterpriseWxids.add(w);
-                ds_labels = cachedLabels != null
-                    ? new java.util.ArrayList<>(cachedLabels) : new java.util.ArrayList<>();
-                ds_labelMembers = new java.util.HashMap<>();
-                if (cachedLabelMembers != null) {
-                    for (java.util.Map.Entry<String, java.util.List<String>> e2 : cachedLabelMembers.entrySet()) {
-                        ds_labelMembers.put(e2.getKey(), new java.util.ArrayList<>(e2.getValue()));
-                    }
-                }
+                ds_labels = labels;
+                ds_labelMembers = labelMembers;
 
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
                     public void run() {
@@ -3065,7 +2988,11 @@ void showGroupDetailDialog(int groupIndex, JSONArray groupItems, File groupFile,
                             String memberWxid = idListNow.getString(i); // fix③: 改名避免遮蔽外层currentWxid
                             String friendName = "";
                             try {
-                                friendName = getFriendName(memberWxid);
+                                // 先尝试获取备注名，如果为空再获取昵称
+                                friendName = getFriendRemarkName(memberWxid);
+                                if (friendName == null || friendName.isEmpty()) {
+                                    friendName = getFriendNickname(memberWxid);
+                                }
                             } catch (Throwable e) {
                             }
 
